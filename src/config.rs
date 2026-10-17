@@ -15,6 +15,8 @@ pub enum Style {
     Tint,
     /// A hue sweep along the trail.
     Rainbow,
+    /// From `color` at the head to `color2` at the tail.
+    Gradient,
 }
 
 impl Style {
@@ -23,6 +25,7 @@ impl Style {
             Style::Natural => "natural",
             Style::Tint => "tint",
             Style::Rainbow => "rainbow",
+            Style::Gradient => "gradient",
         }
     }
 
@@ -31,6 +34,7 @@ impl Style {
             "natural" => Some(Style::Natural),
             "tint" | "tinted" | "color" | "colour" => Some(Style::Tint),
             "rainbow" => Some(Style::Rainbow),
+            "gradient" => Some(Style::Gradient),
             _ => None,
         }
     }
@@ -89,6 +93,7 @@ impl<'de> Deserialize<'de> for Lag {
 }
 
 pub const MAX_LAG_MS: u32 = 60;
+pub const MAX_GLOW: u32 = 12;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -104,8 +109,16 @@ pub struct Settings {
     /// Pointer speed in px/s below which there is no smear.
     pub min_speed: u32,
     pub style: Style,
-    /// Trail colour for `style = "tint"`, as `#RRGGBB`.
+    /// Trail colour for `style = "tint"` (and the head colour for "gradient"), as `#RRGGBB`.
     pub color: String,
+    /// Tail colour for `style = "gradient"`.
+    pub color2: String,
+    /// Radius in pixels of a soft halo around the trail; 0 turns it off.
+    pub glow: u32,
+    /// Pause while a fullscreen app (a game, a video) is in front.
+    pub pause_fullscreen: bool,
+    /// Pause while one of these apps is in front: program names such as "cs2.exe" or "Photoshop".
+    pub excluded_apps: Vec<String>,
     /// Global toggle shortcut, e.g. "Ctrl+Alt+B". Empty disables it.
     pub hotkey: String,
     /// Download and install new releases from GitHub automatically.
@@ -123,6 +136,10 @@ impl Default for Settings {
             min_speed: 150,
             style: Style::Natural,
             color: "#38B6FF".into(),
+            color2: "#FF4FD8".into(),
+            glow: 0,
+            pause_fullscreen: true,
+            excluded_apps: Vec::new(),
             hotkey: "Ctrl+Alt+B".into(),
             auto_update: true,
         }
@@ -139,6 +156,11 @@ impl Settings {
         if parse_color(&self.color).is_none() {
             self.color = Settings::default().color;
         }
+        if parse_color(&self.color2).is_none() {
+            self.color2 = Settings::default().color2;
+        }
+        self.glow = self.glow.min(MAX_GLOW);
+        self.excluded_apps.retain(|a| !a.trim().is_empty());
         self
     }
 
@@ -147,6 +169,10 @@ impl Settings {
             Style::Natural => Tint::Natural,
             Style::Tint => Tint::Solid(parse_color(&self.color).unwrap_or([0x38, 0xB6, 0xFF])),
             Style::Rainbow => Tint::Rainbow { phase },
+            Style::Gradient => Tint::Gradient(
+                parse_color(&self.color).unwrap_or([0x38, 0xB6, 0xFF]),
+                parse_color(&self.color2).unwrap_or([0xFF, 0x4F, 0xD8]),
+            ),
         }
     }
 
@@ -175,9 +201,20 @@ impl Settings {
              # Pointer speed (pixels per second) below which there is no smear.\n\
              min_speed = {}\n\
              \n\
-             # \"natural\" (the cursor's own colours), \"tint\" (one colour, see below) or \"rainbow\".\n\
+             # \"natural\" (the cursor's own colours), \"tint\" (one colour), \"gradient\" (color at the\n\
+             # head fading to color2 at the tail) or \"rainbow\".\n\
              style = {}\n\
              color = {}\n\
+             color2 = {}\n\
+             \n\
+             # Radius in pixels of a soft halo around the trail; 0 turns it off.\n\
+             glow = {}\n\
+             \n\
+             # Pause while a fullscreen app (a game, a video) is in front.\n\
+             pause_fullscreen = {}\n\
+             \n\
+             # Pause while one of these apps is in front, e.g. [\"cs2.exe\", \"Photoshop\"].\n\
+             excluded_apps = {}\n\
              \n\
              # Global shortcut that toggles the effect, e.g. \"Ctrl+Alt+B\" or \"Super+Shift+M\".\n\
              # Leave empty to disable.\n\
@@ -196,6 +233,10 @@ impl Settings {
             self.min_speed,
             q(self.style.name()),
             q(&self.color),
+            q(&self.color2),
+            self.glow,
+            self.pause_fullscreen,
+            toml::Value::Array(self.excluded_apps.iter().map(|a| toml::Value::String(a.clone())).collect()),
             q(&self.hotkey),
             self.auto_update,
         )
@@ -241,7 +282,13 @@ mod tests {
 
     #[test]
     fn round_trips_through_toml() {
-        let s = Settings { lag_ms: Lag::Ms(12), style: Style::Rainbow, ..Settings::default() };
+        let s = Settings {
+            lag_ms: Lag::Ms(12),
+            style: Style::Gradient,
+            glow: 6,
+            excluded_apps: vec!["cs2.exe".into(), "Adobe \"Photoshop\"".into()],
+            ..Settings::default()
+        };
         let back: Settings = toml::from_str(&s.to_toml_string()).unwrap();
         assert_eq!(back, s);
         let back: Settings = toml::from_str(&Settings::default().to_toml_string()).unwrap();

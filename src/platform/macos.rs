@@ -14,12 +14,14 @@ use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{MainThreadMarker, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSCursor, NSGraphicsContext, NSScreen,
-    NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
 };
-use objc2_core_foundation::{CFData, CFRetained, CFType, CGPoint, CGRect, CGSize};
+use objc2_core_foundation::{CFData, CFDictionary, CFNumber, CFRetained, CFString, CFType, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
     CGBitmapContextCreate, CGBitmapContextGetData, CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider,
-    CGEvent, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
+    CGDisplayBounds, CGEvent, CGGetActiveDisplayList, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
+    CGRectMakeWithDictionaryRepresentation, CGWindowListCopyWindowInfo, CGWindowListOption, kCGNullWindowID,
+    kCGWindowBounds, kCGWindowLayer, kCGWindowOwnerPID,
 };
 use objc2_foundation::{NSRunLoop, NSRunLoopCommonModes, NSTimer};
 use objc2_quartz_core::{CALayer, CATransaction};
@@ -29,7 +31,7 @@ use mouse_blur::cursor::CursorImage;
 use mouse_blur::history::MotionHistory;
 
 use crate::app::{self, Action, Controller, PointerSource, Shared};
-use crate::renderer::{Overlay, Renderer};
+use crate::renderer::{Foreground, Overlay, Renderer};
 
 /// kCGOverlayWindowLevel: above menus and the Dock, below the screen saver.
 const OVERLAY_LEVEL: isize = 102;
@@ -367,4 +369,57 @@ impl Overlay for MacOverlay {
     fn refresh_rate(&mut self) -> f64 {
         self.refresh
     }
+
+    fn foreground(&mut self) -> Foreground {
+        let Some(app) = NSWorkspace::sharedWorkspace().frontmostApplication() else {
+            return Foreground::default();
+        };
+        let mut names = Vec::new();
+        if let Some(name) = app.localizedName() {
+            names.push(name.to_string());
+        }
+        if let Some(name) = app.executableURL().and_then(|url| url.lastPathComponent()) {
+            names.push(name.to_string());
+        }
+        Foreground { names, fullscreen: front_window_fills_a_display(app.processIdentifier()) }
+    }
+}
+
+/// True if the front-most normal window of process `pid` covers a whole display. Window bounds
+/// and owners are readable without Screen Recording permission.
+fn front_window_fills_a_display(pid: i32) -> bool {
+    let options = CGWindowListOption::OptionOnScreenOnly | CGWindowListOption::ExcludeDesktopElements;
+    let Some(windows) = CGWindowListCopyWindowInfo(options, kCGNullWindowID) else { return false };
+    let mut ids = [0u32; 16];
+    let mut count = 0u32;
+    unsafe { CGGetActiveDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) };
+    let displays: Vec<CGRect> = ids[..count.min(16) as usize].iter().map(|&id| CGDisplayBounds(id)).collect();
+    let number = |dict: &CFDictionary, key: &CFString| -> Option<i32> {
+        let value = unsafe { dict.value((key as *const CFString).cast()) };
+        (!value.is_null()).then(|| unsafe { &*(value as *const CFNumber) }.as_i32()).flatten()
+    };
+    // The list runs front to back, so the first normal-layer window of the app is its front one.
+    for i in 0..windows.count() {
+        let dict = unsafe { windows.value_at_index(i) } as *const CFDictionary;
+        if dict.is_null() {
+            continue;
+        }
+        let dict = unsafe { &*dict };
+        if number(dict, unsafe { kCGWindowOwnerPID }) != Some(pid) || number(dict, unsafe { kCGWindowLayer }) != Some(0)
+        {
+            continue;
+        }
+        let bounds = unsafe { dict.value((kCGWindowBounds as *const CFString).cast()) } as *const CFDictionary;
+        let mut r = CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(0.0, 0.0));
+        if bounds.is_null() || !unsafe { CGRectMakeWithDictionaryRepresentation(Some(&*bounds), &mut r) } {
+            return false;
+        }
+        return displays.iter().any(|d| {
+            r.origin.x <= d.origin.x
+                && r.origin.y <= d.origin.y
+                && r.origin.x + r.size.width >= d.origin.x + d.size.width
+                && r.origin.y + r.size.height >= d.origin.y + d.size.height
+        });
+    }
+    false
 }

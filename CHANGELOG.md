@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0
+
+- Presets: Subtle, Natural, Strong, Cinematic, Neon and Rainbow, one click each.
+- Gradient style: the trail runs from one colour at the head to another at the tail.
+- Glow: a soft halo around the trail, up to 12 px. Works with every style.
+- Pauses by itself while a fullscreen app (a game, a video) is in front. On by default.
+- Excluded apps: list programs (such as cs2.exe or Photoshop) where the effect pauses while they're
+  in front. The settings window offers recently focused apps as one-click additions.
+- After an automatic update, the settings window says so and links to what's new.
+- The settings window's scrollbar no longer covers its content.
+
 ## 0.2.0
 
 - A settings window. Opening the app now shows it (and starts the effect in the background if it

@@ -154,6 +154,8 @@ pub struct Controller {
 
 /// Touched by the settings window's "Update now" button.
 pub const UPDATE_REQUEST_FILE: &str = "update-request";
+/// Holds the version an automatic update installed, for the settings window's notice.
+pub const UPDATED_FILE: &str = "updated-to";
 
 enum UpdateOutcome {
     UpToDate,
@@ -264,6 +266,7 @@ impl Controller {
                         UpdateOutcome::Failed(e) => warning!("update failed: {e}"),
                         UpdateOutcome::Installed(version) => {
                             info!("updated to {version}; restarting");
+                            let _ = std::fs::write(config::config_dir().join(UPDATED_FILE), &version);
                             start_background(&self.config_path);
                             self.perform(Action::Quit);
                         }

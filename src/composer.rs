@@ -14,6 +14,8 @@ pub enum Tint {
     Solid([u8; 3]),
     /// A hue sweep from head to tail; `phase` (0..1) rotates it.
     Rainbow { phase: f32 },
+    /// From the first colour at the head to the second at the tail.
+    Gradient([u8; 3], [u8; 3]),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -30,11 +32,13 @@ pub struct TrailParams {
     /// Average speed (px/s) at which the smear starts fading in. It is fully visible at 4.5x this.
     pub min_speed: f32,
     pub tint: Tint,
+    /// Radius in pixels of a soft halo added around the trail; 0 for none.
+    pub glow: f32,
 }
 
 impl Default for TrailParams {
     fn default() -> Self {
-        TrailParams { gain: 3.0, window: 0.05, lead: 0.0, taper: 0.5, min_speed: 150.0, tint: Tint::Natural }
+        TrailParams { gain: 3.0, window: 0.05, lead: 0.0, taper: 0.5, min_speed: 150.0, tint: Tint::Natural, glow: 0.0 }
     }
 }
 
@@ -88,6 +92,8 @@ pub struct Composer {
     tmp: Vec<f32>,
     clipped: Vec<(f32, f32, f32)>, // x, y, age
     stamps: Vec<Stamp>,
+    glow_a: Vec<[u32; 4]>,
+    glow_b: Vec<[u32; 4]>,
     accum: Vec<u32>, // 4 channels per pixel, 16.16 fixed point
     row_start: Vec<usize>,
     row_end: Vec<usize>,
@@ -267,6 +273,10 @@ impl Composer {
             max_x = max_x.max(ox + img.right);
             max_y = max_y.max(oy + img.bottom);
         }
+        // Room for the halo: two box-blur passes spread it by twice the radius.
+        let glow = p.glow.clamp(0.0, 32.0).round() as usize;
+        let pad = 2 * glow as i32;
+        let (min_x, min_y, max_x, max_y) = (min_x - pad, min_y - pad, max_x + pad, max_y + pad);
         let rect = Rect { x: min_x, y: min_y, width: (max_x - min_x) as usize, height: (max_y - min_y) as usize };
         self.ensure_capacity(rect.width, rect.height);
 
@@ -281,6 +291,7 @@ impl Composer {
                 Tint::Natural => None,
                 Tint::Solid(c) => Some(c),
                 Tint::Rainbow { phase } => Some(hue(phase + 0.8 * st.age / window)),
+                Tint::Gradient(head, tail) => Some(mix(head, tail, st.age / window)),
             };
             // The rectangle is cropped to the cursor's visible pixels, so these offsets can be
             // negative by up to img.left / img.top; adding a visible column or row makes them >= 0.
@@ -337,8 +348,38 @@ impl Composer {
                 a.fill(0);
             }
         }
+        if glow > 0 {
+            self.add_glow(rect.width, rect.height, glow);
+        }
         self.rect = Some(rect);
         Some(rect)
+    }
+
+    /// Adds a blurred copy of the trail on top of itself: a soft halo with the sharp trail at its
+    /// core. Two box blurs approximate a Gaussian.
+    fn add_glow(&mut self, w: usize, h: usize, radius: usize) {
+        let n = w * h;
+        self.glow_a.clear();
+        self.glow_a.extend(self.out[..n].iter().map(|&p| [p & 0xFF, (p >> 8) & 0xFF, (p >> 16) & 0xFF, p >> 24]));
+        self.glow_b.clear();
+        self.glow_b.resize(n, [0; 4]);
+        for _ in 0..2 {
+            box_blur(&self.glow_a, &mut self.glow_b, w, h, radius, 1, w);
+            box_blur(&self.glow_b, &mut self.glow_a, h, w, radius, w, 1);
+        }
+        for (p, halo) in self.out[..n].iter_mut().zip(&self.glow_a) {
+            let ch = |i: usize, sh: u32| ((*p >> sh) & 0xFF) + halo[i] * 2;
+            let a = ch(3, 24).min(255);
+            let r = ch(2, 16).min(a);
+            let g = ch(1, 8).min(a);
+            let b = ch(0, 0).min(a);
+            *p = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+        // The halo reaches outside the per-row spans; make release() clear whole rows.
+        for y in 0..h {
+            self.row_start[y] = 0;
+            self.row_end[y] = w;
+        }
     }
 
     /// The last composed trail, if [`compose`](Self::compose) succeeded and it hasn't been released.
@@ -384,6 +425,40 @@ fn add_stamp(stamps: &mut Vec<Stamp>, x: i32, y: i32, w: f32, age: f32) {
         }
     }
     stamps.push(Stamp { x, y, w, age });
+}
+
+/// One box-blur pass along lines of len pixels (`step` apart), `count` lines (`line_step` apart).
+/// Pixels outside the image count as transparent.
+fn box_blur(src: &[[u32; 4]], dst: &mut [[u32; 4]], len: usize, count: usize, r: usize, step: usize, line_step: usize) {
+    let div = (2 * r + 1) as u32;
+    for line in 0..count {
+        let at = |i: usize| line * line_step + i * step;
+        let mut sum = [0u32; 4];
+        for i in 0..=r.min(len - 1) {
+            for c in 0..4 {
+                sum[c] += src[at(i)][c];
+            }
+        }
+        for i in 0..len {
+            dst[at(i)] = [sum[0] / div, sum[1] / div, sum[2] / div, sum[3] / div];
+            if i + r + 1 < len {
+                for c in 0..4 {
+                    sum[c] += src[at(i + r + 1)][c];
+                }
+            }
+            if i >= r {
+                for c in 0..4 {
+                    sum[c] -= src[at(i - r)][c];
+                }
+            }
+        }
+    }
+}
+
+fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    let t = t.clamp(0.0, 1.0);
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    [m(a[0], b[0]), m(a[1], b[1]), m(a[2], b[2])]
 }
 
 /// Typical time between pointer updates over the last few moves; 0 if it just started or stopped.
@@ -538,6 +613,41 @@ mod tests {
         let params = TrailParams { tint: Tint::Rainbow { phase: 0.0 }, ..TrailParams::default() };
         c.compose(&s, 1000 * MS, &img, &params).unwrap();
         assert_valid(&c.frame().unwrap());
+    }
+
+    #[test]
+    fn glow_widens_the_trail_and_stays_valid() {
+        let img = CursorImage::arrow(1.0);
+        let s = samples(|t| ((500.0 + 3000.0 * t) as f32, 200.0));
+        let mut c = Composer::new();
+        let sharp = c.compose(&s, 1000 * MS, &img, &TrailParams::default()).unwrap();
+        let params = TrailParams { glow: 5.0, ..TrailParams::default() };
+        let soft = c.compose(&s, 1000 * MS, &img, &params).unwrap();
+        assert_eq!(soft.width, sharp.width + 20);
+        assert_eq!(soft.height, sharp.height + 20);
+        let frame = c.frame().unwrap();
+        assert_valid(&frame);
+        // The halo reaches the padding rows above the original trail.
+        assert!(frame.pixels[5 * soft.width..10 * soft.width].iter().any(|p| p >> 24 > 0));
+        c.release();
+        assert!(c.out.iter().all(|&p| p == 0), "release must clear the halo too");
+    }
+
+    #[test]
+    fn gradient_runs_from_head_to_tail_colour() {
+        let img = CursorImage::arrow(1.0);
+        let s = samples(|t| ((500.0 + 3000.0 * t) as f32, 200.0));
+        let mut c = Composer::new();
+        let params =
+            TrailParams { tint: Tint::Gradient([255, 0, 0], [0, 0, 255]), taper: 0.0, ..TrailParams::default() };
+        let rect = c.compose(&s, 1000 * MS, &img, &params).unwrap();
+        let frame = c.frame().unwrap();
+        assert_valid(&frame);
+        let row = rect.height / 2;
+        let px = |x: usize| frame.pixels[row * rect.width + x];
+        let (head, tail) = (px(rect.width - 20), px(10));
+        assert!((head >> 16) & 0xFF > head & 0xFF, "head should be red: {head:08x}");
+        assert!(tail & 0xFF > (tail >> 16) & 0xFF, "tail should be blue: {tail:08x}");
     }
 
     #[test]

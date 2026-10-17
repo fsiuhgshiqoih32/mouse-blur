@@ -24,7 +24,7 @@ use mouse_blur::history::MotionHistory;
 
 use crate::app::{self, Controller, PointerSource, Shared};
 use crate::log::{error, warning};
-use crate::renderer::{self, Overlay};
+use crate::renderer::{self, Foreground, Overlay};
 
 pub fn init_process() {}
 
@@ -116,8 +116,18 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// Atoms for asking the window manager what's in front.
+struct ActiveAtoms {
+    active_window: u32,
+    wm_state: u32,
+    fullscreen: u32,
+    wm_pid: u32,
+}
+
 struct X11Overlay {
     conn: RustConnection,
+    root: Window,
+    active: ActiveAtoms,
     window: Window,
     gc: u32,
     screen_width: u16,
@@ -189,6 +199,12 @@ impl X11Overlay {
         let wm_type_dnd = atom("_NET_WM_WINDOW_TYPE_DND")?;
         let bypass = atom("_NET_WM_BYPASS_COMPOSITOR")?;
         let cm_atom = atom(&format!("_NET_WM_CM_S{screen_num}"))?;
+        let active = ActiveAtoms {
+            active_window: atom("_NET_ACTIVE_WINDOW")?,
+            wm_state: atom("_NET_WM_STATE")?,
+            fullscreen: atom("_NET_WM_STATE_FULLSCREEN")?,
+            wm_pid: atom("_NET_WM_PID")?,
+        };
         conn.change_property32(PropMode::REPLACE, window, wm_type, AtomEnum::ATOM, &[wm_type_dnd]).map_err(err)?;
         conn.change_property32(PropMode::REPLACE, window, bypass, AtomEnum::CARDINAL, &[2]).map_err(err)?;
         conn.change_property8(PropMode::REPLACE, window, AtomEnum::WM_NAME, AtomEnum::STRING, b"mouse-blur overlay")
@@ -217,6 +233,8 @@ impl X11Overlay {
         conn.flush().map_err(err)?;
         Ok(X11Overlay {
             conn,
+            root,
+            active,
             window,
             gc,
             screen_width: screen.width_in_pixels,
@@ -276,6 +294,13 @@ fn refresh_rate(conn: &RustConnection, root: Window) -> Option<f64> {
         }
     }
     (best > 1.0).then_some(best)
+}
+
+impl X11Overlay {
+    fn property32(&self, window: Window, property: u32, kind: u32) -> Option<Vec<u32>> {
+        let reply = self.conn.get_property(false, window, property, kind, 0, 64).ok()?.reply().ok()?;
+        reply.value32().map(|v| v.collect())
+    }
 }
 
 impl Overlay for X11Overlay {
@@ -361,6 +386,43 @@ impl Overlay for X11Overlay {
 
     fn refresh_rate(&mut self) -> f64 {
         self.refresh
+    }
+
+    fn foreground(&mut self) -> Foreground {
+        let a = &self.active;
+        let Some(win) =
+            self.property32(self.root, a.active_window, AtomEnum::WINDOW.into()).and_then(|v| v.first().copied())
+        else {
+            return Foreground::default();
+        };
+        if win == 0 {
+            return Foreground::default();
+        }
+        let fullscreen = self
+            .property32(win, a.wm_state, AtomEnum::ATOM.into())
+            .is_some_and(|states| states.contains(&a.fullscreen));
+        let mut names = Vec::new();
+        if let Some(pid) = self.property32(win, a.wm_pid, AtomEnum::CARDINAL.into()).and_then(|v| v.first().copied())
+            && let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        {
+            names.push(comm.trim().to_string());
+        }
+        // WM_CLASS holds two NUL-terminated strings: instance and class name.
+        if let Some(reply) = self
+            .conn
+            .get_property(false, win, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 256)
+            .ok()
+            .and_then(|c| c.reply().ok())
+        {
+            names.extend(
+                reply
+                    .value
+                    .split(|&b| b == 0)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| String::from_utf8_lossy(s).into_owned()),
+            );
+        }
+        Foreground { names, fullscreen }
     }
 
     fn pump(&mut self) {

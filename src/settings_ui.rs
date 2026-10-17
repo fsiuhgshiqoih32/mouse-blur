@@ -2,6 +2,7 @@
 //! background process reloads the file within a quarter second, so every change shows up live.
 
 use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
@@ -14,6 +15,7 @@ use mouse_blur::cursor::CursorImage;
 use mouse_blur::history::MotionSample;
 
 use crate::log::warning;
+use crate::renderer::RECENT_APPS_FILE;
 use crate::{app, autostart, single_instance, updater};
 
 /// Touched by a second launch to bring an open settings window to the front.
@@ -23,14 +25,39 @@ pub fn request_raise() {
     let _ = std::fs::write(config::config_dir().join(RAISE_FILE), b"");
 }
 
+/// Applies a preset's values to the settings.
+type ApplyPreset = fn(&mut Settings);
+
+/// One-click looks. Each sets the trail and style settings and leaves the rest alone.
+const PRESETS: [(&str, ApplyPreset); 6] = [
+    ("Subtle", |s| set_look(s, 150, 40, 60, Style::Natural, 0)),
+    ("Natural", |s| set_look(s, 300, 50, 50, Style::Natural, 0)),
+    ("Strong", |s| set_look(s, 500, 70, 40, Style::Natural, 0)),
+    ("Cinematic", |s| set_look(s, 350, 120, 70, Style::Natural, 2)),
+    ("Neon", |s| {
+        set_look(s, 450, 60, 50, Style::Gradient, 8);
+        s.color = "#38B6FF".into();
+        s.color2 = "#FF4FD8".into();
+    }),
+    ("Rainbow", |s| set_look(s, 400, 70, 40, Style::Rainbow, 3)),
+];
+
+fn set_look(s: &mut Settings, intensity: u32, blur_ms: u32, taper: u32, style: Style, glow: u32) {
+    s.intensity = intensity;
+    s.blur_ms = blur_ms;
+    s.taper = taper;
+    s.style = style;
+    s.glow = glow;
+}
+
 pub fn run(config_path: PathBuf) -> Result<(), String> {
     let icon = egui::IconData { rgba: art::app_icon(64, true, false), width: 64, height: 64 };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Mouse Blur")
             .with_app_id("mouse-blur")
-            .with_inner_size([460.0, 880.0])
-            .with_min_inner_size([400.0, 480.0])
+            .with_inner_size([480.0, 900.0])
+            .with_min_inner_size([420.0, 480.0])
             .with_icon(icon),
         ..Default::default()
     };
@@ -53,25 +80,37 @@ struct SettingsApp {
     hotkey_text: String,
     hotkey_valid: bool,
     color: [u8; 3],
+    color2: [u8; 3],
     /// Remembered so turning "Automatic" off and on again keeps the manual value.
     manual_lag: u32,
     autostart: Option<auto_launch::AutoLaunch>,
     autostart_on: bool,
-    preview: Preview,
-    update_check: Option<std::sync::mpsc::Receiver<Result<Option<updater::Update>, String>>>,
+    new_app: String,
+    recent_apps: Vec<String>,
+    recent_mtime: Option<SystemTime>,
+    /// Set after an automatic update to this version, until dismissed.
+    updated_notice: Option<String>,
+    update_check: Option<Receiver<Result<Option<updater::Update>, String>>>,
     update_status: String,
     update_available: Option<String>,
+    preview: Preview,
 }
 
 impl SettingsApp {
     fn new(cc: &eframe::CreationContext<'_>, path: PathBuf) -> Self {
         cc.egui_ctx.style_mut(|style| {
             style.spacing.item_spacing = egui::vec2(8.0, 7.0);
-            style.spacing.slider_width = 210.0;
+            style.spacing.slider_width = 220.0;
+            // A scrollbar that takes its own space instead of floating over the content.
+            style.spacing.scroll = egui::style::ScrollStyle::solid();
         });
         let settings = config::load(&path).unwrap_or_default();
         let autostart = autostart::launcher();
         let autostart_on = autostart.as_ref().is_some_and(autostart::is_enabled);
+        let updated_notice = std::fs::read_to_string(config::config_dir().join(app::UPDATED_FILE))
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| v == updater::current_version());
         let mut app = SettingsApp {
             file_mtime: app::mtime(&path),
             raise_mtime: app::mtime(&config::config_dir().join(RAISE_FILE)),
@@ -85,13 +124,18 @@ impl SettingsApp {
             hotkey_text: String::new(),
             hotkey_valid: true,
             color: [0x38, 0xB6, 0xFF],
+            color2: [0xFF, 0x4F, 0xD8],
             manual_lag: 10,
             autostart,
             autostart_on,
-            preview: Preview::new(),
+            new_app: String::new(),
+            recent_apps: Vec::new(),
+            recent_mtime: None,
+            updated_notice,
             update_check: None,
             update_status: String::new(),
             update_available: None,
+            preview: Preview::new(),
         };
         app.show_loaded(settings);
         app
@@ -100,9 +144,7 @@ impl SettingsApp {
     fn show_loaded(&mut self, s: Settings) {
         self.hotkey_text = s.hotkey.clone();
         self.hotkey_valid = true;
-        if let Some(c) = parse_color(&s.color) {
-            self.color = c;
-        }
+        self.sync_colors(&s);
         if let Lag::Ms(v) = s.lag_ms {
             self.manual_lag = v;
         }
@@ -110,11 +152,21 @@ impl SettingsApp {
         self.written = s;
     }
 
+    fn sync_colors(&mut self, s: &Settings) {
+        if let Some(c) = parse_color(&s.color) {
+            self.color = c;
+        }
+        if let Some(c) = parse_color(&s.color2) {
+            self.color2 = c;
+        }
+    }
+
     /// Picks up edits made elsewhere (tray, hotkey, a text editor), raise requests from a second
-    /// launch, and whether the background effect is running.
+    /// launch, the apps recently in front, update check results, and whether the effect runs.
     fn poll(&mut self, ctx: &egui::Context) {
         if self.last_file_check.elapsed() >= Duration::from_millis(250) {
             self.last_file_check = Instant::now();
+            let dir = config::config_dir();
             let m = app::mtime(&self.path);
             if m != self.file_mtime && self.settings == self.written {
                 self.file_mtime = m;
@@ -122,11 +174,22 @@ impl SettingsApp {
                     self.show_loaded(s);
                 }
             }
-            let r = app::mtime(&config::config_dir().join(RAISE_FILE));
+            let r = app::mtime(&dir.join(RAISE_FILE));
             if r != self.raise_mtime {
                 self.raise_mtime = r;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+            let recent = app::mtime(&dir.join(RECENT_APPS_FILE));
+            if recent != self.recent_mtime {
+                self.recent_mtime = recent;
+                self.recent_apps = std::fs::read_to_string(dir.join(RECENT_APPS_FILE))
+                    .unwrap_or_default()
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(String::from)
+                    .collect();
             }
         }
         if let Some(rx) = &self.update_check
@@ -134,7 +197,9 @@ impl SettingsApp {
         {
             self.update_check = None;
             match result {
-                Ok(None) => self.update_status = "Up to date.".into(),
+                Ok(None) => {
+                    self.update_status = format!("Up to date. {} is the latest version.", updater::current_version())
+                }
                 Ok(Some(update)) => {
                     self.update_status = format!("Version {} is available.", update.version);
                     self.update_available = Some(update.version);
@@ -183,6 +248,18 @@ impl SettingsApp {
             });
         });
         ui.label(egui::RichText::new("Real motion blur for your mouse pointer.").weak());
+
+        if let Some(version) = self.updated_notice.clone() {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(format!("Updated to {version}."));
+                ui.hyperlink_to("What's new", format!("{}/releases/tag/v{version}", app::HOMEPAGE));
+                if ui.small_button("Dismiss").clicked() {
+                    let _ = std::fs::remove_file(config::config_dir().join(app::UPDATED_FILE));
+                    self.updated_notice = None;
+                }
+            });
+        }
         ui.add_space(6.0);
 
         let hint = match self.settings.hotkey.trim() {
@@ -197,6 +274,17 @@ impl SettingsApp {
 
         self.preview.show(ui, &self.settings);
         ui.label(egui::RichText::new("Preview. Move your pointer quickly to see the real thing.").small().weak());
+        ui.add_space(2.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Presets");
+            for (name, apply) in PRESETS {
+                if ui.button(name).clicked() {
+                    apply(&mut self.settings);
+                    let s = self.settings.clone();
+                    self.sync_colors(&s);
+                }
+            }
+        });
 
         section(ui, "Trail");
         egui::Grid::new("trail").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
@@ -210,6 +298,9 @@ impl SettingsApp {
             ui.label("Taper").on_hover_text("How much the smear fades towards its tail.");
             ui.add(egui::Slider::new(&mut s.taper, 0..=100).suffix("%"));
             ui.end_row();
+            ui.label("Glow").on_hover_text("A soft halo around the trail.");
+            ui.add(egui::Slider::new(&mut s.glow, 0..=config::MAX_GLOW).suffix(" px"));
+            ui.end_row();
             ui.label("Minimum speed").on_hover_text("Slower movements than this stay sharp.");
             ui.add(egui::Slider::new(&mut s.min_speed, 0..=1000).suffix(" px/s"));
             ui.end_row();
@@ -219,14 +310,70 @@ impl SettingsApp {
         ui.horizontal(|ui| {
             ui.radio_value(&mut self.settings.style, Style::Natural, "Natural");
             ui.radio_value(&mut self.settings.style, Style::Tint, "Tinted");
+            ui.radio_value(&mut self.settings.style, Style::Gradient, "Gradient");
             ui.radio_value(&mut self.settings.style, Style::Rainbow, "Rainbow");
         });
-        if self.settings.style == Style::Tint {
-            ui.horizontal(|ui| {
-                ui.label("Colour");
-                if ui.color_edit_button_srgb(&mut self.color).changed() {
-                    let [r, g, b] = self.color;
-                    self.settings.color = format!("#{r:02X}{g:02X}{b:02X}");
+        match self.settings.style {
+            Style::Tint => {
+                ui.horizontal(|ui| {
+                    ui.label("Colour");
+                    if ui.color_edit_button_srgb(&mut self.color).changed() {
+                        self.settings.color = hex(self.color);
+                    }
+                });
+            }
+            Style::Gradient => {
+                ui.horizontal(|ui| {
+                    ui.label("Head");
+                    if ui.color_edit_button_srgb(&mut self.color).changed() {
+                        self.settings.color = hex(self.color);
+                    }
+                    ui.add_space(12.0);
+                    ui.label("Tail");
+                    if ui.color_edit_button_srgb(&mut self.color2).changed() {
+                        self.settings.color2 = hex(self.color2);
+                    }
+                });
+            }
+            Style::Natural | Style::Rainbow => {}
+        }
+
+        section(ui, "When to pause");
+        ui.checkbox(&mut self.settings.pause_fullscreen, "While a fullscreen app is in front (games, videos)");
+        ui.label("While these apps are in front:");
+        let mut remove = None;
+        ui.horizontal_wrapped(|ui| {
+            if self.settings.excluded_apps.is_empty() {
+                ui.label(egui::RichText::new("none").weak());
+            }
+            for (i, name) in self.settings.excluded_apps.iter().enumerate() {
+                if ui.button(format!("{name}   x")).on_hover_text("Remove").clicked() {
+                    remove = Some(i);
+                }
+            }
+        });
+        if let Some(i) = remove {
+            self.settings.excluded_apps.remove(i);
+        }
+        ui.horizontal(|ui| {
+            let edit =
+                ui.add(egui::TextEdit::singleline(&mut self.new_app).desired_width(180.0).hint_text("e.g. cs2.exe"));
+            let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (ui.button("Add").clicked() || entered) && !self.new_app.trim().is_empty() {
+                let name = self.new_app.trim().to_string();
+                self.add_excluded(name);
+                self.new_app.clear();
+            }
+        });
+        let suggestions: Vec<String> =
+            self.recent_apps.iter().filter(|a| !self.settings.excluded_apps.contains(a)).take(6).cloned().collect();
+        if !suggestions.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("Recently in front:").small().weak());
+                for name in suggestions {
+                    if ui.small_button(format!("+ {name}")).clicked() {
+                        self.add_excluded(name);
+                    }
                 }
             });
         }
@@ -304,7 +451,9 @@ impl SettingsApp {
                     app::start_background(&self.path);
                 }
                 self.update_available = None;
-                self.update_status = "Installing in the background. Mouse Blur restarts by itself; reopen this window afterwards to use the new version.".into();
+                self.update_status = "Installing in the background. Mouse Blur restarts by itself; reopen this \
+                                      window afterwards to use the new version."
+                    .into();
             }
         });
         if !self.update_status.is_empty() {
@@ -314,8 +463,14 @@ impl SettingsApp {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             if ui.button("Reset to defaults").clicked() {
-                let keep = (self.settings.enabled, self.settings.hotkey.clone());
-                let defaults = Settings { enabled: keep.0, hotkey: keep.1, ..Settings::default() };
+                let current = self.settings.clone();
+                let defaults = Settings {
+                    enabled: current.enabled,
+                    hotkey: current.hotkey,
+                    excluded_apps: current.excluded_apps,
+                    auto_update: current.auto_update,
+                    ..Settings::default()
+                };
                 let written = self.written.clone();
                 self.show_loaded(defaults);
                 self.written = written; // so the reset gets saved
@@ -330,6 +485,16 @@ impl SettingsApp {
         ui.add_space(4.0);
         ui.label(egui::RichText::new(self.path.display().to_string()).small().weak());
     }
+
+    fn add_excluded(&mut self, name: String) {
+        if !self.settings.excluded_apps.iter().any(|a| a.eq_ignore_ascii_case(&name)) {
+            self.settings.excluded_apps.push(name);
+        }
+    }
+}
+
+fn hex([r, g, b]: [u8; 3]) -> String {
+    format!("#{r:02X}{g:02X}{b:02X}")
 }
 
 fn section(ui: &mut egui::Ui, title: &str) {
@@ -412,6 +577,7 @@ impl Preview {
                 taper: s.taper as f32 / 100.0,
                 min_speed: s.min_speed as f32,
                 tint: s.tint((t * 0.25).fract() as f32),
+                glow: s.glow as f32 * ppp,
             };
             if self.composer.compose(&self.samples, now, &self.cursor, &params).is_some()
                 && let Some(f) = self.composer.frame()

@@ -2,7 +2,7 @@
 
 Real motion blur for your mouse pointer, on Windows, macOS and Linux (X11).
 
-![Natural blur on light and dark backgrounds, a tinted trail and a rainbow trail](docs/preview.png)
+![Natural blur on light and dark backgrounds, a gradient trail with glow, and a rainbow trail](docs/preview.png)
 
 Move the pointer quickly and a smooth smear trails behind it, the way a camera with an open shutter
 records a moving object. Slow, precise movements stay sharp. The real pointer is never hidden or
@@ -45,8 +45,9 @@ windows. Log in to an X11 session for full support.
 
 ## Using it
 
-The settings window has a live preview and every option; changes apply to the running effect
-immediately. **Ctrl+Alt+B** turns the effect on and off from anywhere. The tray menu has Enabled,
+The settings window has a live preview, one-click presets (Subtle, Natural, Strong, Cinematic, Neon,
+Rainbow) and every option; changes apply to the running effect immediately. The effect pauses by
+itself while a fullscreen game or video is in front, and in any apps you list. **Ctrl+Alt+B** turns the effect on and off from anywhere. The tray menu has Enabled,
 Settings, Start at login and Quit.
 
 Everything is also stored in a plain config file, reloaded as soon as it's saved:
@@ -56,8 +57,12 @@ Everything is also stored in a plain config file, reloaded as soon as it's saved
 | `intensity` | How visible the smear is, in percent. 100 is a physically accurate exposure. | 300 |
 | `blur_ms` | Shutter time: how far back in time the smear reaches. | 50 |
 | `taper` | How much the smear fades towards its tail, in percent. | 50 |
-| `style` | `natural` (the cursor's own colours), `tint` (one colour) or `rainbow`. | natural |
-| `color` | Trail colour for the tint style. | `#38B6FF` |
+| `style` | `natural` (the cursor's own colours), `tint` (one colour), `gradient` or `rainbow`. | natural |
+| `color` | Trail colour for the tint style, and the head colour for gradient. | `#38B6FF` |
+| `color2` | Tail colour for the gradient style. | `#FF4FD8` |
+| `glow` | Radius in pixels of a soft halo around the trail; 0 for none. | 0 |
+| `pause_fullscreen` | Pause while a fullscreen app (a game, a video) is in front. | true |
+| `excluded_apps` | Pause while one of these apps is in front, e.g. `["cs2.exe", "Photoshop"]`. | none |
 | `lag_ms` | Lag compensation in ms, or `auto`. See below. | auto |
 | `min_speed` | Pointer speed (px/s) below which there's no smear. | 150 |
 | `hotkey` | Toggle shortcut, such as `Ctrl+Alt+B` or `Super+Shift+M`. Empty disables it. | Ctrl+Alt+B |

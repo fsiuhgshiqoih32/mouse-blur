@@ -1,6 +1,6 @@
 [package]
 name = "mouse-blur"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Real motion blur for your mouse pointer on Windows, macOS and Linux (X11)."
@@ -41,6 +41,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_HiDpi",
     "Win32_System_LibraryLoader",
     "Win32_System_Console",
+    "Win32_System_Threading",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

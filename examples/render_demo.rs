@@ -15,6 +15,7 @@ struct Scene {
     background: u32,
     tint: Tint,
     update_hz: f64,
+    glow: f32,
     path: fn(f64) -> (f64, f64),
 }
 
@@ -26,12 +27,14 @@ fn main() {
             background: 0xFFF3F3F3,
             tint: Tint::Natural,
             update_hz: 0.0,
+            glow: 0.0,
             path: |t| (330.0 + 6000.0 * t, 150.0 - 60000.0 * t * t),
         },
         Scene {
             background: 0xFF1E1E1E,
             tint: Tint::Natural,
             update_hz: 125.0,
+            glow: 0.0,
             path: |t| {
                 let a = 4500.0 / 100.0 * t;
                 (240.0 + 100.0 * a.cos(), 150.0 + 100.0 * a.sin())
@@ -39,18 +42,19 @@ fn main() {
         },
         Scene {
             background: 0xFF1E1E1E,
-            tint: Tint::Solid([0x38, 0xB6, 0xFF]),
+            tint: Tint::Gradient([0x38, 0xB6, 0xFF], [0xFF, 0x4F, 0xD8]),
             update_hz: 0.0,
+            glow: 12.0,
             path: |t| (330.0 + 5000.0 * t, 190.0 + 2800.0 * t),
         },
         Scene {
             background: 0xFFF3F3F3,
             tint: Tint::Rainbow { phase: 0.0 },
             update_hz: 0.0,
+            glow: 4.0,
             path: |t| (330.0 + 6000.0 * t, 150.0 + 70.0 * (t * 40.0).sin()),
         },
     ];
-
     let mut canvas = vec![0u32; W * 2 * H * 2];
     let mut composer = Composer::new();
     let now: i64 = 1_000_000_000;
@@ -70,7 +74,15 @@ fn main() {
                 MotionSample { t: now - k * 1_000_000, x: x.round() as f32, y: y.round() as f32 }
             })
             .collect();
-        let params = TrailParams { gain: 3.0, window: 0.05, lead, taper: 0.5, min_speed: 150.0, tint: scene.tint };
+        let params = TrailParams {
+            gain: 3.0,
+            window: 0.05,
+            lead,
+            taper: 0.5,
+            min_speed: 150.0,
+            tint: scene.tint,
+            glow: scene.glow,
+        };
         if composer.compose(&samples, now, &cursor, &params).is_some() {
             let frame = composer.frame().unwrap();
             blend(&mut canvas, px, py, frame.rect.x, frame.rect.y, frame.rect.width, frame.rect.height, frame.pixels);

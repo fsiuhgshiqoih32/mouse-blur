@@ -24,11 +24,35 @@ pub trait Overlay {
     /// Processes pending window-system events. Threaded overlays call this every frame.
     #[cfg_attr(target_os = "macos", allow(dead_code))] // macOS renders from the main run loop
     fn pump(&mut self) {}
+    /// The app in front and whether it covers its whole monitor, for the pause rules.
+    fn foreground(&mut self) -> Foreground {
+        Foreground::default()
+    }
     /// Blocks until the next vertical blank if the platform can; returns false if it can't.
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn wait_vsync(&mut self) -> bool {
         false
     }
+}
+
+/// What's in front: the focused app's names (program file and display name) and whether its window
+/// covers the whole monitor.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Foreground {
+    pub names: Vec<String>,
+    pub fullscreen: bool,
+}
+
+/// True if the pause rules in `s` say the effect should step aside for `fg`.
+pub fn should_pause(s: &Settings, fg: &Foreground) -> bool {
+    if s.pause_fullscreen && fg.fullscreen {
+        return true;
+    }
+    let norm = |n: &str| {
+        let n = n.trim().to_lowercase();
+        n.strip_suffix(".exe").or_else(|| n.strip_suffix(".app")).unwrap_or(&n).to_string()
+    };
+    fg.names.iter().any(|name| s.excluded_apps.iter().any(|ex| norm(ex) == norm(name)))
 }
 
 pub enum Tick {
@@ -49,7 +73,13 @@ pub struct Renderer {
     /// Used when the overlay can't read a cursor; only set for `--self-test`, where the real
     /// pointer may well be hidden or idle.
     fallback_cursor: Option<Arc<CursorImage>>,
+    last_foreground_check: Option<Instant>,
+    paused: bool,
+    recent_apps: Vec<String>,
 }
+
+/// Apps recently in front, newest first, written for the settings window to offer as exclusions.
+pub const RECENT_APPS_FILE: &str = "recent-apps.txt";
 
 impl Renderer {
     pub fn new(shared: &Shared) -> Self {
@@ -60,6 +90,9 @@ impl Renderer {
             version: shared.version(),
             started: Instant::now(),
             fallback_cursor: shared.self_test.then(|| Arc::new(CursorImage::arrow(1.0))),
+            last_foreground_check: None,
+            paused: false,
+            recent_apps: Vec::new(),
         }
     }
 
@@ -67,8 +100,19 @@ impl Renderer {
         if self.version != shared.version() {
             self.version = shared.version();
             self.settings = shared.settings();
+            self.last_foreground_check = None;
         }
         if !self.settings.enabled {
+            overlay.hide();
+            return Tick::Idle;
+        }
+        if !shared.self_test && self.last_foreground_check.is_none_or(|t| t.elapsed() >= Duration::from_millis(400)) {
+            self.last_foreground_check = Some(Instant::now());
+            let fg = overlay.foreground();
+            self.paused = should_pause(&self.settings, &fg);
+            self.remember(&fg);
+        }
+        if self.paused {
             overlay.hide();
             return Tick::Idle;
         }
@@ -99,6 +143,7 @@ impl Renderer {
             taper: s.taper as f32 / 100.0,
             min_speed: s.min_speed as f32,
             tint: s.tint((self.started.elapsed().as_secs_f32() * 0.25).fract()),
+            glow: s.glow as f32,
         };
         match self.composer.compose(&self.samples, now, &cursor, &params) {
             Some(_) => {
@@ -114,6 +159,22 @@ impl Renderer {
                 Tick::Moving
             }
         }
+    }
+}
+
+impl Renderer {
+    fn remember(&mut self, fg: &Foreground) {
+        let Some(name) = fg.names.first() else { return };
+        let lower = name.to_lowercase();
+        if lower.starts_with("mouse-blur") || lower.starts_with("mouse blur") || self.recent_apps.first() == Some(name)
+        {
+            return;
+        }
+        self.recent_apps.retain(|n| n != name);
+        self.recent_apps.insert(0, name.clone());
+        self.recent_apps.truncate(8);
+        let path = mouse_blur::config::config_dir().join(RECENT_APPS_FILE);
+        let _ = std::fs::write(path, self.recent_apps.join("\n"));
     }
 }
 
@@ -136,4 +197,24 @@ pub fn run_loop(overlay: &mut dyn Overlay, shared: &Shared, history: &MotionHist
         }
     }
     overlay.hide();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pause_rules() {
+        let fg = |names: &[&str], fullscreen| Foreground {
+            names: names.iter().map(|n| n.to_string()).collect(),
+            fullscreen,
+        };
+        let s = Settings { excluded_apps: vec!["cs2".into(), "Photoshop.app".into()], ..Settings::default() };
+        assert!(should_pause(&s, &fg(&["explorer.exe"], true)), "fullscreen pauses by default");
+        assert!(!should_pause(&s, &fg(&["explorer.exe"], false)));
+        assert!(should_pause(&s, &fg(&["CS2.exe"], false)), "names match without .exe and case");
+        assert!(should_pause(&s, &fg(&["Adobe Photoshop 2026", "Photoshop"], false)));
+        let off = Settings { pause_fullscreen: false, ..Settings::default() };
+        assert!(!should_pause(&off, &fg(&["game.exe"], true)));
+    }
 }

@@ -9,23 +9,28 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
+use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Dwm::DwmFlush;
 use windows_sys::Win32::Graphics::Gdi::{
     AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, CreateCompatibleDC,
-    CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GdiFlush, GetDC, GetDeviceCaps, GetObjectW, HBITMAP, HDC,
-    HGDIOBJ, ReleaseDC, SelectObject, VREFRESH,
+    CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GdiFlush, GetDC, GetDeviceCaps, GetMonitorInfoW,
+    GetObjectW, HBITMAP, HDC, HGDIOBJ, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow, ReleaseDC,
+    SelectObject, VREFRESH,
 };
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+};
 use windows_sys::Win32::UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CURSOR_SHOWING, CURSORINFO, CreateWindowExW, DI_NORMAL, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    DrawIconEx, GetCursorInfo, GetCursorPos, GetIconInfo, GetMessageW, GetSystemMetrics, HCURSOR, HWND_TOPMOST,
-    ICONINFO, MB_ICONERROR, MB_OK, MSG, MessageBoxW, PM_REMOVE, PeekMessageW, RegisterClassExW, SM_CXSCREEN,
-    SM_CYSCREEN, SW_HIDE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetTimer, SetWindowPos, ShowWindow,
-    TranslateMessage, ULW_ALPHA, UpdateLayeredWindow, WM_DISPLAYCHANGE, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    DrawIconEx, GetClassNameW, GetCursorInfo, GetCursorPos, GetForegroundWindow, GetIconInfo, GetMessageW,
+    GetSystemMetrics, GetWindowRect, GetWindowThreadProcessId, HCURSOR, HWND_TOPMOST, ICONINFO, MB_ICONERROR, MB_OK,
+    MSG, MessageBoxW, PM_REMOVE, PeekMessageW, RegisterClassExW, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetTimer, SetWindowPos, ShowWindow, TranslateMessage, ULW_ALPHA,
+    UpdateLayeredWindow, WM_DISPLAYCHANGE, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use mouse_blur::composer::Frame;
@@ -34,7 +39,7 @@ use mouse_blur::history::MotionHistory;
 
 use crate::app::{self, Controller, PointerSource, Shared};
 use crate::log::error;
-use crate::renderer::{self, Overlay};
+use crate::renderer::{self, Foreground, Overlay};
 
 pub fn init_process() {
     unsafe {
@@ -305,6 +310,46 @@ impl Overlay for WinOverlay {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
+        }
+    }
+
+    fn foreground(&mut self) -> Foreground {
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd.is_null() {
+                return Foreground::default();
+            }
+            let mut class = [0u16; 64];
+            let len = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32).max(0) as usize;
+            let class = String::from_utf16_lossy(&class[..len]);
+            // The desktop and taskbar cover the screen too, but they aren't a fullscreen app.
+            let shell = matches!(class.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd");
+            let mut fullscreen = false;
+            let mut r: RECT = zeroed();
+            if !shell && GetWindowRect(hwnd, &mut r) != 0 {
+                let mut mi: MONITORINFO = zeroed();
+                mi.cbSize = size_of::<MONITORINFO>() as u32;
+                if GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut mi) != 0 {
+                    let m = mi.rcMonitor;
+                    fullscreen = r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom;
+                }
+            }
+            let mut names = Vec::new();
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            let process = if pid != 0 { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) } else { null_mut() };
+            if !process.is_null() {
+                let mut buf = [0u16; 1024];
+                let mut len = buf.len() as u32;
+                if QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0 {
+                    let path = String::from_utf16_lossy(&buf[..len as usize]);
+                    if let Some(name) = std::path::Path::new(&path).file_name() {
+                        names.push(name.to_string_lossy().into_owned());
+                    }
+                }
+                CloseHandle(process);
+            }
+            Foreground { names, fullscreen }
         }
     }
 
