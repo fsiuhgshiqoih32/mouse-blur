@@ -2280,7 +2280,7 @@ dependencies = [
 
 [[package]]
 name = "mouse-blur"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "auto-launch",
  "block2 0.6.2",

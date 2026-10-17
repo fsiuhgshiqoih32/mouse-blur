@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+- The "Recently in front" suggestions no longer list Mouse Blur's own window as it was left
+  running by an update.
+
 ## 0.3.0
 
 - Presets: Subtle, Natural, Strong, Cinematic, Neon and Rainbow, one click each.
