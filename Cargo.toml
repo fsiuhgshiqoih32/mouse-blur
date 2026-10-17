@@ -48,7 +48,8 @@ objc2-quartz-core = "0.3"
 gtk = { version = "0.18", optional = true }
 x11rb = { version = "0.13", features = ["shape", "xfixes", "randr"] }
 
-[target.'cfg(windows)'.build-dependencies]
+[build-dependencies]
+# Only used when the target is Windows; see build.rs.
 winresource = "0.1"
 
 [dev-dependencies]

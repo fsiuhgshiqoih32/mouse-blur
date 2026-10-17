@@ -298,7 +298,7 @@ impl Composer {
                 let dst = &mut self.accum[base..base + src.len() * 4];
                 match color {
                     None => {
-                        for (d, &s) in dst.chunks_exact_mut(4).zip(src) {
+                        for (d, &s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src) {
                             d[0] += (s & 0xFF) * wfix;
                             d[1] += ((s >> 8) & 0xFF) * wfix;
                             d[2] += ((s >> 16) & 0xFF) * wfix;
@@ -309,7 +309,7 @@ impl Composer {
                         let wb = (wfix * (cb as u32 + 1)) >> 8;
                         let wg = (wfix * (cg as u32 + 1)) >> 8;
                         let wr = (wfix * (cr as u32 + 1)) >> 8;
-                        for (d, &s) in dst.chunks_exact_mut(4).zip(src) {
+                        for (d, &s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src) {
                             let a = s >> 24;
                             d[0] += a * wb;
                             d[1] += a * wg;
