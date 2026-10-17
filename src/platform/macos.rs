@@ -19,7 +19,7 @@ use objc2_app_kit::{
 use objc2_core_foundation::{CFData, CFRetained, CFType, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
     CGBitmapContextCreate, CGBitmapContextGetData, CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider,
-    CGEvent, CGImage, CGImageAlphaInfo,
+    CGEvent, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo,
 };
 use objc2_foundation::{NSRunLoop, NSRunLoopCommonModes, NSTimer};
 use objc2_quartz_core::{CALayer, CATransaction};
@@ -90,10 +90,8 @@ pub fn run(
             }
             shared.quitting()
         };
-        if quit {
-            if let Some(mtm) = MainThreadMarker::new() {
-                NSApplication::sharedApplication(mtm).terminate(None);
-            }
+        if quit && let Some(mtm) = MainThreadMarker::new() {
+            NSApplication::sharedApplication(mtm).terminate(None);
         }
     });
     let timer = unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(interval, true, &block) };
@@ -115,7 +113,7 @@ fn pointer_source(scale: Arc<AtomicU32>) -> PointerSource {
 }
 
 fn bitmap_info() -> u32 {
-    CGImageAlphaInfo::PremultipliedFirst.0 | CGBitmapInfo::ByteOrder32Little.bits()
+    CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0
 }
 
 struct ScreenWindow {
@@ -278,6 +276,9 @@ impl Overlay for MacOverlay {
             return self.cursor.clone();
         }
         self.cursor_checked = Some(Instant::now());
+        // Deprecated in favour of ScreenCaptureKit, but still the only public way to read the
+        // cursor another app has set; if it ever returns nothing, the arrow is used instead.
+        #[allow(deprecated)]
         let cursor = NSCursor::currentSystemCursor().unwrap_or_else(NSCursor::arrowCursor);
         let key = Retained::as_ptr(&cursor.image()) as usize;
         if key != self.cursor_key || self.cursor.is_none() {

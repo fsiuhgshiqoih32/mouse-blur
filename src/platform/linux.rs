@@ -268,10 +268,11 @@ fn refresh_rate(conn: &RustConnection, root: Window) -> Option<f64> {
         if info.mode == 0 {
             continue;
         }
-        if let Some(m) = res.modes.iter().find(|m| m.id == info.mode) {
-            if m.htotal > 0 && m.vtotal > 0 {
-                best = best.max(m.dot_clock as f64 / (m.htotal as f64 * m.vtotal as f64));
-            }
+        if let Some(m) = res.modes.iter().find(|m| m.id == info.mode)
+            && m.htotal > 0
+            && m.vtotal > 0
+        {
+            best = best.max(m.dot_clock as f64 / (m.htotal as f64 * m.vtotal as f64));
         }
     }
     (best > 1.0).then_some(best)

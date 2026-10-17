@@ -22,8 +22,10 @@ pub trait Overlay {
     /// Refresh rate of the display, in Hz.
     fn refresh_rate(&mut self) -> f64;
     /// Processes pending window-system events. Threaded overlays call this every frame.
+    #[cfg_attr(target_os = "macos", allow(dead_code))] // macOS renders from the main run loop
     fn pump(&mut self) {}
     /// Blocks until the next vertical blank if the platform can; returns false if it can't.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn wait_vsync(&mut self) -> bool {
         false
     }
@@ -117,6 +119,7 @@ impl Renderer {
 
 /// Runs the renderer on the current thread until `shared` asks to quit. Used by platforms whose
 /// overlay can live on a worker thread (Windows, X11).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn run_loop(overlay: &mut dyn Overlay, shared: &Shared, history: &MotionHistory) {
     let mut renderer = Renderer::new(shared);
     while !shared.quitting() {
