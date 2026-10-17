@@ -1,6 +1,6 @@
 [package]
 name = "mouse-blur"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Real motion blur for your mouse pointer on Windows, macOS and Linux (X11)."
@@ -19,10 +19,18 @@ tray = ["dep:tray-icon", "dep:gtk"]
 [dependencies]
 auto-launch = "0.6"
 dirs = "7"
+eframe = "0.33.3"
+flate2 = "1.1.10"
 global-hotkey = "0.9"
+self-replace = "1.5.0"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+tar = "0.4.46"
 toml = "1"
 tray-icon = { version = "0.26", optional = true }
+ureq = { version = "3.4.2", features = ["json"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

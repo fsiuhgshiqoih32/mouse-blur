@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0
+
+- A settings window. Opening the app now shows it (and starts the effect in the background if it
+  isn't running); closing it leaves the effect running in the tray. It has a live animated preview
+  of the trail and every setting: intensity, blur length, taper, minimum speed, style and colour,
+  lag compensation, the toggle shortcut, start at login and updates.
+- Automatic updates. The app checks GitHub when it starts and every six hours, downloads the new
+  version for your platform, verifies it against the release checksums, swaps it in and restarts.
+  It can be turned off in the settings window, which also has a Check for updates button.
+- Simpler tray menu: Enabled, Settings, Start at login, Project page, Quit.
+- Settings changes reach the running effect within a quarter second.
+- Start at login now starts only the background effect, without the window.
+
 ## 0.1.0
 
 First release.

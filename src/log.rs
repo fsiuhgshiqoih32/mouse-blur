@@ -27,8 +27,12 @@ macro_rules! warning {
     ($($arg:tt)*) => { $crate::log::write("warning", format_args!($($arg)*)) };
 }
 
+macro_rules! info {
+    ($($arg:tt)*) => { $crate::log::write("info", format_args!($($arg)*)) };
+}
+
 macro_rules! error {
     ($($arg:tt)*) => { $crate::log::write("error", format_args!($($arg)*)) };
 }
 
-pub(crate) use {error, warning};
+pub(crate) use {error, info, warning};

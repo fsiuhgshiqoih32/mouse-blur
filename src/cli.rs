@@ -11,9 +11,24 @@ pub struct Cli {
     pub help: bool,
     pub version: bool,
     pub print_config_path: bool,
+    /// Run only the background effect (tray, hotkey, overlay), without the settings window.
+    pub background: bool,
+    /// Open the settings window (the default when no options are given).
+    pub settings: bool,
     /// Hidden: drive the real overlay with a simulated pointer for 2 s and report (used by CI).
     pub self_test: bool,
+    /// Hidden: ask GitHub for a newer release, print the answer and exit.
+    pub check_update: bool,
+    /// Hidden: install a newer release if there is one, then exit.
+    pub update: bool,
     pub overrides: Overrides,
+}
+
+impl Cli {
+    /// Options that only make sense for the background effect, so they imply `--background`.
+    pub fn wants_background(&self) -> bool {
+        self.background || self.no_tray || self.overrides.any()
+    }
 }
 
 /// Values given on the command line; they override the config file for this run.
@@ -31,6 +46,18 @@ pub struct Overrides {
 }
 
 impl Overrides {
+    fn any(&self) -> bool {
+        self.intensity.is_some()
+            || self.blur_ms.is_some()
+            || self.taper.is_some()
+            || self.lag.is_some()
+            || self.min_speed.is_some()
+            || self.style.is_some()
+            || self.color.is_some()
+            || self.hotkey.is_some()
+            || self.disabled
+    }
+
     pub fn apply(&self, s: &mut Settings) {
         if let Some(v) = self.intensity {
             s.intensity = v;
@@ -69,7 +96,11 @@ pub fn help() -> String {
          \n\
          Usage: mouse-blur [options]\n\
          \n\
+         With no options, opens the settings window and starts the effect in the background.\n\
+         \n\
          Options:\n\
+         \x20 --background            Start only the effect (tray icon, hotkey), no window\n\
+         \x20 --settings              Open the settings window\n\
          \x20 --intensity <percent>   How visible the smear is; 100 is physically accurate [300]\n\
          \x20 --blur <ms>             Shutter time: how far back the smear reaches [50]\n\
          \x20 --taper <percent>       How much the smear fades towards its tail [50]\n\
@@ -112,6 +143,10 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
             "--disabled" => cli.overrides.disabled = true,
             "--print-config-path" => cli.print_config_path = true,
             "--self-test" => cli.self_test = true,
+            "--check-update" => cli.check_update = true,
+            "--update" => cli.update = true,
+            "--background" => cli.background = true,
+            "--settings" => cli.settings = true,
             "--config" => cli.config = Some(PathBuf::from(value("a path")?)),
             "--intensity" => cli.overrides.intensity = Some(number(value("a percentage")?, &name)?),
             "--blur" => cli.overrides.blur_ms = Some(number(value("milliseconds")?, &name)?),

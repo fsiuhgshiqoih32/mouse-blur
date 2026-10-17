@@ -108,6 +108,8 @@ pub struct Settings {
     pub color: String,
     /// Global toggle shortcut, e.g. "Ctrl+Alt+B". Empty disables it.
     pub hotkey: String,
+    /// Download and install new releases from GitHub automatically.
+    pub auto_update: bool,
 }
 
 impl Default for Settings {
@@ -122,19 +124,10 @@ impl Default for Settings {
             style: Style::Natural,
             color: "#38B6FF".into(),
             hotkey: "Ctrl+Alt+B".into(),
+            auto_update: true,
         }
     }
 }
-
-pub const INTENSITY_PRESETS: [(u32, &str); 5] =
-    [(100, "Realistic"), (200, "Subtle"), (300, "Normal"), (450, "Strong"), (600, "Maximum")];
-pub const BLUR_PRESETS: [(u32, &str); 5] =
-    [(25, "Short"), (50, "Medium"), (80, "Long"), (120, "Very long"), (200, "Extreme")];
-pub const TAPER_PRESETS: [(u32, &str); 4] = [(0, "None"), (25, "Light"), (50, "Medium"), (100, "Full")];
-pub const LAG_PRESETS: [Lag; 7] =
-    [Lag::Auto, Lag::Ms(0), Lag::Ms(5), Lag::Ms(10), Lag::Ms(15), Lag::Ms(20), Lag::Ms(30)];
-pub const STYLE_PRESETS: [(Style, &str); 3] =
-    [(Style::Natural, "Natural"), (Style::Tint, "Tinted"), (Style::Rainbow, "Rainbow")];
 
 impl Settings {
     /// Clamps every value into its supported range.
@@ -188,7 +181,10 @@ impl Settings {
              \n\
              # Global shortcut that toggles the effect, e.g. \"Ctrl+Alt+B\" or \"Super+Shift+M\".\n\
              # Leave empty to disable.\n\
-             hotkey = {}\n",
+             hotkey = {}\n\
+             \n\
+             # Install new versions from GitHub automatically.\n\
+             auto_update = {}\n",
             self.enabled,
             self.intensity,
             self.blur_ms,
@@ -201,6 +197,7 @@ impl Settings {
             q(self.style.name()),
             q(&self.color),
             q(&self.hotkey),
+            self.auto_update,
         )
     }
 }

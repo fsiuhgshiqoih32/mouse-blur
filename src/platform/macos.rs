@@ -28,7 +28,7 @@ use mouse_blur::composer::Frame;
 use mouse_blur::cursor::CursorImage;
 use mouse_blur::history::MotionHistory;
 
-use crate::app::{self, Controller, PointerSource, Shared};
+use crate::app::{self, Action, Controller, PointerSource, Shared};
 use crate::renderer::{Overlay, Renderer};
 
 /// kCGOverlayWindowLevel: above menus and the Dock, below the screen saver.
@@ -45,6 +45,7 @@ struct MainState {
     renderer: Renderer,
     controller: Controller,
     last_poll: Instant,
+    was_active: bool,
 }
 
 pub fn run(
@@ -73,8 +74,13 @@ pub fn run(
 
     let controller = make_controller(true);
     let interval = 1.0 / overlay.refresh.clamp(30.0, 240.0);
-    let state =
-        RefCell::new(MainState { renderer: Renderer::new(&shared), overlay, controller, last_poll: Instant::now() });
+    let state = RefCell::new(MainState {
+        renderer: Renderer::new(&shared),
+        overlay,
+        controller,
+        last_poll: Instant::now(),
+        was_active: false,
+    });
     let block = RcBlock::new(move |_timer: NonNull<NSTimer>| {
         let quit = {
             let Ok(mut st) = state.try_borrow_mut() else { return };
@@ -84,6 +90,14 @@ pub fn run(
             if st.last_poll.elapsed() >= Duration::from_millis(50) {
                 st.last_poll = Instant::now();
                 st.controller.poll();
+                // Opening the app again while only this background copy runs makes macOS activate
+                // us instead of starting a new process; answer that by showing the settings window.
+                let active =
+                    MainThreadMarker::new().is_some_and(|mtm| NSApplication::sharedApplication(mtm).isActive());
+                if active && !st.was_active && !shared.self_test {
+                    st.controller.perform(Action::OpenSettings);
+                }
+                st.was_active = active;
             }
             if shared.quitting() {
                 st.overlay.hide();

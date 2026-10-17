@@ -1,18 +1,49 @@
 name: Release
 
+# Publishing a version: bump `version` in Cargo.toml, add a CHANGELOG.md section, push to main.
+# This workflow notices the new version, builds every platform, and publishes the GitHub release
+# (creating the vX.Y.Z tag). Installed copies pick it up through the auto-updater.
+
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v$version is already released; nothing to do."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Releasing v$version."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
   windows:
+    needs: version
+    if: needs.version.outputs.release == 'true'
     strategy:
       matrix:
         include:
@@ -21,6 +52,8 @@ jobs:
           - target: aarch64-pc-windows-msvc
             arch: arm64
     runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -32,7 +65,7 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          $name = "mouse-blur-$($env:GITHUB_REF_NAME)-windows-${{ matrix.arch }}"
+          $name = "mouse-blur-v$($env:VERSION)-windows-${{ matrix.arch }}"
           New-Item -ItemType Directory $name | Out-Null
           Copy-Item target/${{ matrix.target }}/release/mouse-blur.exe, README.md, LICENSE $name
           Compress-Archive -Path $name -DestinationPath "$name.zip"
@@ -42,7 +75,11 @@ jobs:
           path: mouse-blur-*.zip
 
   macos:
+    needs: version
+    if: needs.version.outputs.release == 'true'
     runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -58,12 +95,11 @@ jobs:
       - name: Package app bundle
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
           app="Mouse Blur.app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           lipo -create -output "$app/Contents/MacOS/mouse-blur" \
             target/aarch64-apple-darwin/release/mouse-blur target/x86_64-apple-darwin/release/mouse-blur
-          sed "s/VERSION/$version/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          sed "s/VERSION/$VERSION/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
           iconset=MouseBlur.iconset
           mkdir "$iconset"
           for s in 16 32 128 256; do
@@ -73,14 +109,18 @@ jobs:
           done
           iconutil -c icns "$iconset" -o "$app/Contents/Resources/MouseBlur.icns"
           codesign --force --deep --sign - "$app"
-          ditto -c -k --keepParent "$app" "mouse-blur-${GITHUB_REF_NAME}-macos.zip"
+          ditto -c -k --keepParent "$app" "mouse-blur-v$VERSION-macos.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: macos
           path: mouse-blur-*.zip
 
   linux:
+    needs: version
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -89,13 +129,15 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libxdo-dev
+          sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libxdo-dev libxkbcommon-dev
+      - name: Test
+        run: cargo test --locked
       - name: Build
         run: cargo build --release --locked
       - name: Package
         run: |
           set -euo pipefail
-          name="mouse-blur-${GITHUB_REF_NAME}-linux-x86_64"
+          name="mouse-blur-v$VERSION-linux-x86_64"
           mkdir "$name"
           cp target/release/mouse-blur README.md LICENSE packaging/linux/mouse-blur.desktop "$name/"
           cp assets/icon.png "$name/mouse-blur.png"
@@ -106,20 +148,25 @@ jobs:
           path: mouse-blur-*.tar.gz
 
   publish:
-    needs: [windows, macos, linux]
+    needs: [version, windows, macos, linux]
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-      - name: Release notes
+      - name: Checksums and release notes
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          awk -v v="## $version" '$0 == v {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
+          set -euo pipefail
+          (cd dist && sha256sum mouse-blur-* > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          awk -v v="## $VERSION" '$0 == v {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
           cat notes.md
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "Mouse Blur ${GITHUB_REF_NAME#v}" --notes-file notes.md
+        run: |
+          gh release create "v$VERSION" dist/* --target "$GITHUB_SHA" \
+            --title "Mouse Blur $VERSION" --notes-file notes.md

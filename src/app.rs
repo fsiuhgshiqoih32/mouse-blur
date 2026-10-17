@@ -7,11 +7,11 @@ use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
-use mouse_blur::config::{self, Lag, Settings, Style};
+use mouse_blur::config::{self, Settings};
 use mouse_blur::history::{MotionHistory, MotionSample, now_ns};
 
 use crate::hotkey::Hotkeys;
-use crate::log::warning;
+use crate::log::{info, warning};
 
 pub const HOMEPAGE: &str = "https://github.com/fsiuhgshiqoih32/mouse-blur";
 
@@ -129,19 +129,15 @@ pub fn spawn_sampler(mut source: PointerSource, shared: Arc<Shared>, history: Ar
 #[cfg_attr(not(feature = "tray"), allow(dead_code))] // only the hotkey's toggle without a tray
 pub enum Action {
     ToggleEnabled,
-    Intensity(u32),
-    Blur(u32),
-    Taper(u32),
-    Lag(Lag),
-    Style(Style),
-    OpenConfig,
+    OpenSettings,
     ToggleAutostart,
     OpenHomepage,
     Quit,
 }
 
-/// Main-thread logic: owns the tray, hotkey and autostart entry, and keeps the config file and
-/// the shared settings in sync.
+/// Main-thread logic of the background process: owns the tray, hotkey and autostart entry, and
+/// keeps the config file and the shared settings in sync. The settings window is a separate
+/// process that edits the config file; changes are picked up here within a quarter second.
 pub struct Controller {
     shared: Arc<Shared>,
     history: Arc<MotionHistory>,
@@ -151,8 +147,24 @@ pub struct Controller {
     hotkeys: Hotkeys,
     autostart: Option<auto_launch::AutoLaunch>,
     self_test_until: Option<Instant>,
+    updates: Updates,
     #[cfg(feature = "tray")]
     tray: Option<crate::tray::Tray>,
+}
+
+/// Touched by the settings window's "Update now" button.
+pub const UPDATE_REQUEST_FILE: &str = "update-request";
+
+enum UpdateOutcome {
+    UpToDate,
+    Installed(String),
+    Failed(String),
+}
+
+struct Updates {
+    next_check: Instant,
+    worker: Option<std::sync::mpsc::Receiver<UpdateOutcome>>,
+    request_mtime: Option<SystemTime>,
 }
 
 impl Controller {
@@ -162,10 +174,10 @@ impl Controller {
         if !shared.self_test {
             hotkeys.set(&settings.hotkey);
         }
-        let autostart = build_autostart();
+        let autostart = if shared.self_test { None } else { crate::autostart::launcher() };
         #[cfg(feature = "tray")]
         let tray = if want_tray {
-            let autostart_on = autostart.as_ref().and_then(|a| a.is_enabled().ok());
+            let autostart_on = autostart.as_ref().map(crate::autostart::is_enabled);
             let label = hotkeys.label().map(str::to_owned);
             // A missing tray library on Linux can panic deep inside the toolkit; run tray-less then.
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -197,6 +209,11 @@ impl Controller {
             hotkeys,
             autostart,
             self_test_until,
+            updates: Updates {
+                next_check: Instant::now() + Duration::from_secs(20),
+                worker: None,
+                request_mtime: mtime(&config::config_dir().join(UPDATE_REQUEST_FILE)),
+            },
             #[cfg(feature = "tray")]
             tray,
         }
@@ -224,33 +241,69 @@ impl Controller {
         if self.hotkeys.pressed() {
             self.perform(Action::ToggleEnabled);
         }
-        if self.last_config_check.elapsed() >= Duration::from_secs(1) {
+        if self.last_config_check.elapsed() >= Duration::from_millis(250) {
             self.last_config_check = Instant::now();
             self.reload_if_changed();
+            self.poll_updates();
         }
+    }
+
+    /// Checks GitHub for a newer release shortly after start and every six hours (release builds
+    /// with auto-update on), or right away when the settings window asks. A successful install
+    /// restarts the app on the new version.
+    fn poll_updates(&mut self) {
+        if self.shared.self_test {
+            return;
+        }
+        if let Some(rx) = &self.updates.worker {
+            match rx.try_recv() {
+                Ok(outcome) => {
+                    self.updates.worker = None;
+                    match outcome {
+                        UpdateOutcome::UpToDate => {}
+                        UpdateOutcome::Failed(e) => warning!("update failed: {e}"),
+                        UpdateOutcome::Installed(version) => {
+                            info!("updated to {version}; restarting");
+                            start_background(&self.config_path);
+                            self.perform(Action::Quit);
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.updates.worker = None,
+            }
+        }
+        let m = mtime(&config::config_dir().join(UPDATE_REQUEST_FILE));
+        let requested = m.is_some() && m != self.updates.request_mtime;
+        self.updates.request_mtime = m;
+        let due =
+            Instant::now() >= self.updates.next_check && !cfg!(debug_assertions) && self.shared.settings().auto_update;
+        if !requested && !due {
+            return;
+        }
+        self.updates.next_check = Instant::now() + Duration::from_secs(6 * 3600);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.updates.worker = Some(rx);
+        std::thread::spawn(move || {
+            let outcome = match crate::updater::check() {
+                Ok(None) => UpdateOutcome::UpToDate,
+                Ok(Some(update)) => match crate::updater::install(&update) {
+                    Ok(()) => UpdateOutcome::Installed(update.version),
+                    Err(e) => UpdateOutcome::Failed(e),
+                },
+                Err(e) => UpdateOutcome::Failed(e),
+            };
+            let _ = tx.send(outcome);
+        });
     }
 
     pub fn perform(&mut self, action: Action) {
         match action {
             Action::ToggleEnabled => self.change(|s| s.enabled = !s.enabled),
-            Action::Intensity(v) => self.change(|s| s.intensity = v),
-            Action::Blur(v) => self.change(|s| s.blur_ms = v),
-            Action::Taper(v) => self.change(|s| s.taper = v),
-            Action::Lag(v) => self.change(|s| s.lag_ms = v),
-            Action::Style(v) => self.change(|s| s.style = v),
-            Action::OpenConfig => {
-                if !self.config_path.exists() {
-                    self.save(&self.shared.settings());
-                }
-                open_file(&self.config_path);
-            }
+            Action::OpenSettings => open_settings(&self.config_path),
             Action::ToggleAutostart => {
                 if let Some(a) = &self.autostart {
-                    let on = a.is_enabled().unwrap_or(false);
-                    let result = if on { a.disable() } else { a.enable() };
-                    if let Err(e) = result {
-                        warning!("could not change start-at-login: {e}");
-                    }
+                    crate::autostart::set_enabled(a, !crate::autostart::is_enabled(a));
                 }
                 self.sync_ui();
             }
@@ -267,15 +320,11 @@ impl Controller {
         f(&mut s);
         let s = s.sanitized();
         self.shared.replace(s.clone());
-        self.save(&s);
-        self.sync_ui();
-    }
-
-    fn save(&mut self, s: &Settings) {
-        if let Err(e) = config::save(&self.config_path, s) {
+        if let Err(e) = config::save(&self.config_path, &s) {
             warning!("could not save {}: {e}", self.config_path.display());
         }
         self.known_mtime = mtime(&self.config_path);
+        self.sync_ui();
     }
 
     fn reload_if_changed(&mut self) {
@@ -302,28 +351,50 @@ impl Controller {
     fn sync_ui(&mut self) {
         #[cfg(feature = "tray")]
         if let Some(tray) = &mut self.tray {
-            let autostart_on = self.autostart.as_ref().and_then(|a| a.is_enabled().ok());
-            tray.sync(&self.shared.settings(), autostart_on, self.hotkeys.label(), self.shared.auto_lag_ms());
+            let autostart_on = self.autostart.as_ref().map(crate::autostart::is_enabled);
+            tray.sync(&self.shared.settings(), autostart_on, self.hotkeys.label());
         }
     }
 }
 
-fn mtime(path: &Path) -> Option<SystemTime> {
+pub fn mtime(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-fn build_autostart() -> Option<auto_launch::AutoLaunch> {
-    let exe = std::env::current_exe().ok()?;
-    let path = exe.to_str()?;
-    auto_launch::AutoLaunchBuilder::new()
-        .set_app_name("mouse-blur")
-        .set_app_path(path)
-        .build()
-        .map_err(|e| warning!("start-at-login unavailable: {e}"))
-        .ok()
+/// Starts another copy of this executable with `args`, detached from this one.
+pub fn spawn_self(args: &[&std::ffi::OsStr]) {
+    let result = std::env::current_exe().and_then(|exe| {
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(unix)]
+        {
+            // Its own process group, so closing a terminal that launched us doesn't take it down.
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        cmd.spawn()
+    });
+    match result {
+        // Reap it when it exits so no zombie is left behind on Unix.
+        Ok(mut child) => drop(std::thread::spawn(move || child.wait())),
+        Err(e) => warning!("could not start {args:?}: {e}"),
+    }
 }
 
-fn open_file(path: &Path) {
+/// Opens the settings window (a separate process). If one is open already, it raises itself.
+pub fn open_settings(config_path: &Path) {
+    spawn_self(&["--settings".as_ref(), "--config".as_ref(), config_path.as_os_str()]);
+}
+
+/// Starts the background effect (tray, hotkey and overlay) for `config_path`.
+pub fn start_background(config_path: &Path) {
+    spawn_self(&["--background".as_ref(), "--config".as_ref(), config_path.as_os_str()]);
+}
+
+pub fn open_file(path: &Path) {
     #[cfg(windows)]
     let result = std::process::Command::new("notepad.exe").arg(path).spawn();
     #[cfg(target_os = "macos")]
@@ -335,7 +406,7 @@ fn open_file(path: &Path) {
     }
 }
 
-fn open_url(url: &str) {
+pub fn open_url(url: &str) {
     #[cfg(windows)]
     let result = std::process::Command::new("explorer.exe").arg(url).spawn();
     #[cfg(target_os = "macos")]

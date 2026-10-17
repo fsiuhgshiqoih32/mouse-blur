@@ -21,7 +21,9 @@ Get the latest build from the [Releases page](https://github.com/fsiuhgshiqoih32
 | macOS 11 or later (Apple silicon and Intel) | `mouse-blur-<version>-macos.zip` |
 | Linux x86_64, X11 | `mouse-blur-<version>-linux-x86_64.tar.gz` |
 
-Unzip it and run it. Mouse Blur sits in the system tray (menu bar on macOS).
+Unzip it and open it. The settings window appears and the effect starts. Close the window and the
+effect keeps running in the system tray (menu bar on macOS); open the app again, or choose Settings
+in the tray menu, to get the window back. New versions install themselves (see [Updates](#updates)).
 
 **Windows:** the exe isn't code-signed, so SmartScreen may warn on first launch. Choose
 "More info", then "Run anyway".
@@ -43,12 +45,11 @@ windows. Log in to an X11 session for full support.
 
 ## Using it
 
-The tray menu has:
+The settings window has a live preview and every option; changes apply to the running effect
+immediately. **Ctrl+Alt+B** turns the effect on and off from anywhere. The tray menu has Enabled,
+Settings, Start at login and Quit.
 
-- **Enabled:** turns the effect on and off. **Ctrl+Alt+B** does the same from anywhere.
-- **Intensity, Blur length, Taper, Style, Lag compensation:** presets for each setting.
-- **Edit config file:** opens the config file for fine-tuning. Changes apply as soon as you save.
-- **Start at login.**
+Everything is also stored in a plain config file, reloaded as soon as it's saved:
 
 | Setting | What it does | Default |
 |---|---|---|
@@ -61,6 +62,7 @@ The tray menu has:
 | `min_speed` | Pointer speed (px/s) below which there's no smear. | 150 |
 | `hotkey` | Toggle shortcut, such as `Ctrl+Alt+B` or `Super+Shift+M`. Empty disables it. | Ctrl+Alt+B |
 | `enabled` | Whether the effect is on. | true |
+| `auto_update` | Install new versions automatically. | true |
 
 The config file lives at:
 
@@ -73,15 +75,26 @@ app can draw on screen, so the smear is pushed ahead to meet it. `auto` uses 1.5
 which is about 6 ms at 240 Hz or 25 ms at 60 Hz. If you see a gap between the pointer and the smear,
 raise it. If the smear overshoots the pointer, lower it.
 
+### Updates
+
+Mouse Blur checks GitHub for a new release when it starts and every six hours. When there is one,
+it downloads the package for your platform, checks it against the SHA-256 checksums published with
+the release, replaces itself and restarts. Turn this off with "Install updates automatically" in the
+settings window, which also has a Check for updates button. Copies installed somewhere you can't
+write to (such as `/usr/bin`) can't update themselves.
+
 ### Command line
 
 ```
 mouse-blur [--intensity <percent>] [--blur <ms>] [--taper <percent>] [--lag <ms|auto>]
            [--style natural|tint|rainbow] [--color <#RRGGBB>] [--min-speed <px/s>]
            [--hotkey <keys>] [--disabled] [--no-tray] [--config <path>]
+mouse-blur --background      start only the effect, no window (what start at login uses)
+mouse-blur --settings        open the settings window
 ```
 
-Options override the config file for that run. `mouse-blur --help` lists them all.
+With no options it opens the settings window. Effect options imply `--background` and override the
+config file for that run. `mouse-blur --help` lists them all.
 
 ## How it works
 
