@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Mouse Blur
+Comment=Real motion blur for the mouse pointer
+Exec=mouse-blur
+Icon=mouse-blur
+Terminal=false
+Categories=Utility;
+StartupNotify=false

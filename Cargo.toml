@@ -1,0 +1,60 @@
+[package]
+name = "mouse-blur"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Real motion blur for your mouse pointer on Windows, macOS and Linux (X11)."
+license = "MIT"
+repository = "https://github.com/fsiuhgshiqoih32/mouse-blur"
+readme = "README.md"
+keywords = ["mouse", "cursor", "motion-blur", "desktop", "overlay"]
+categories = ["gui", "multimedia::images"]
+
+[features]
+default = ["tray"]
+# System tray menu. On Linux this needs GTK 3 and libayatana-appindicator at build and run time;
+# build with --no-default-features for a tray-less binary controlled by hotkey, CLI and config file.
+tray = ["dep:tray-icon", "dep:gtk"]
+
+[dependencies]
+auto-launch = "0.6"
+dirs = "7"
+global-hotkey = "0.9"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+tray-icon = { version = "0.26", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Console",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-core-foundation = "0.3"
+objc2-core-graphics = "0.3"
+objc2-foundation = "0.3"
+objc2-quartz-core = "0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", optional = true }
+x11rb = { version = "0.13", features = ["shape", "xfixes", "randr"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+png = "0.18"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
