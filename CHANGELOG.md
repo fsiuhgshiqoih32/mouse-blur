@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3
+
+- Windows developer tools in `tools/windows`: drive the settings window through UI Automation,
+  capture it, and check how overlays blend on each monitor (see CONTRIBUTING.md).
+- No changes to the app itself.
+
 ## 0.3.2
 
 - "Update to" and reopening the settings window now work every time, not only the first time.
