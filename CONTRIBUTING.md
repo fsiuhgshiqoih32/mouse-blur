@@ -34,6 +34,19 @@ cargo run -- --self-test
 actual pointer isn't moved), then prints how many frames were presented. CI runs it on Windows,
 macOS and Linux (under Xvfb).
 
+## Testing the window on Windows
+
+The settings window can be driven without touching the mouse, because egui exposes its widgets to
+Windows UI Automation:
+
+```powershell
+.\tools\windows\drive-ui.ps1 -List                        # every control and label
+.\tools\windows\drive-ui.ps1 -Invoke 'Check for updates'   # press a button
+.\tools\windows\drive-ui.ps1 -Toggle 'Start at login'      # flip a checkbox
+.\tools\windows\capture-window.ps1 -Out window.png         # screenshot the window
+.\tools\windows\hdr-blend-check.ps1                         # how DWM blends overlays per monitor
+```
+
 ## Releases
 
 Bump `version` in `Cargo.toml`, add a matching section to `CHANGELOG.md`, and push to `main`. The
