@@ -276,9 +276,15 @@ impl Controller {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.updates.worker = None,
             }
         }
-        let m = mtime(&config::config_dir().join(UPDATE_REQUEST_FILE));
+        let request = config::config_dir().join(UPDATE_REQUEST_FILE);
+        let m = mtime(&request);
         let requested = m.is_some() && m != self.updates.request_mtime;
         self.updates.request_mtime = m;
+        if requested {
+            // Consumed: the next request creates the file afresh, which always changes its time.
+            let _ = std::fs::remove_file(&request);
+            self.updates.request_mtime = None;
+        }
         let due =
             Instant::now() >= self.updates.next_check && !cfg!(debug_assertions) && self.shared.settings().auto_update;
         if !requested && !due {
@@ -358,6 +364,13 @@ impl Controller {
             tray.sync(&self.shared.settings(), autostart_on, self.hotkeys.label());
         }
     }
+}
+
+/// Leaves a note for another Mouse Blur process: a small file in the config directory whose
+/// modification time changes every time. (Rewriting an empty file doesn't always update it.)
+pub fn signal(name: &str) {
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let _ = std::fs::write(config::config_dir().join(name), stamp.to_string());
 }
 
 pub fn mtime(path: &Path) -> Option<SystemTime> {

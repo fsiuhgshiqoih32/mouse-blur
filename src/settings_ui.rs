@@ -22,7 +22,7 @@ use crate::{app, autostart, single_instance, updater};
 const RAISE_FILE: &str = "raise-settings";
 
 pub fn request_raise() {
-    let _ = std::fs::write(config::config_dir().join(RAISE_FILE), b"");
+    app::signal(RAISE_FILE);
 }
 
 /// Applies a preset's values to the settings.
@@ -175,10 +175,11 @@ impl SettingsApp {
                 }
             }
             let r = app::mtime(&dir.join(RAISE_FILE));
-            if r != self.raise_mtime {
-                self.raise_mtime = r;
+            if r.is_some() && r != self.raise_mtime {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                let _ = std::fs::remove_file(dir.join(RAISE_FILE));
+                self.raise_mtime = None;
             }
             let recent = app::mtime(&dir.join(RECENT_APPS_FILE));
             if recent != self.recent_mtime {
@@ -446,7 +447,7 @@ impl SettingsApp {
                 && ui.button(format!("Update to {version}")).clicked()
             {
                 // The background process installs it and restarts itself on the new version.
-                let _ = std::fs::write(config::config_dir().join(app::UPDATE_REQUEST_FILE), b"");
+                app::signal(app::UPDATE_REQUEST_FILE);
                 if !self.running {
                     app::start_background(&self.path);
                 }

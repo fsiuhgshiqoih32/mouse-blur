@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+- "Update to" and reopening the settings window now work every time, not only the first time.
+  The note one process leaves another now always changes its timestamp, and is removed once read.
+
 ## 0.3.1
 
 - The "Recently in front" suggestions no longer list Mouse Blur's own window as it was left
